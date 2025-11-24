@@ -33,7 +33,6 @@ class MessageCreate(BaseModel):
     room_id: str = "default"
     text: str
     client_type: str = "web"
-    user_id: Optional[str] = "test"  # 로그인한 사용자 ID
 
 class MessageResponse(BaseModel):
     id: int
@@ -59,7 +58,7 @@ class RegisterResponse(BaseModel):
     message: str
 
 # --- 서버 B (텍스트 처리용) ---
-SERVER_B_URL = "http://localhost:5001/process"
+SERVER_B_URL = "http://localhost:5000/process"
 
 # --- 서버 C (오디오 판단 서버) ---
 JUDGE_BASE_URL     = "http://127.0.0.1:9000"
@@ -70,7 +69,15 @@ USERDATA_PATH = Path("static/userdata.json")
 
 # 정적 파일 제공
 BASE_DIR = Path(__file__).parent
+WAV_DIR = BASE_DIR / "wavfiles"
+WAV_DIR.mkdir(exist_ok=True)
+
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+app.mount("/wavfiles", StaticFiles(directory=str(WAV_DIR)), name="wavfiles")
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse("static/favicon.ico")
 
 # 루트 → index.html
 @app.get("/", response_class=FileResponse)
@@ -85,7 +92,7 @@ def get_messages(room_id: str = "default"):
     return [m for m in MESSAGES if m["room_id"] == room_id]
 
 @app.post("/api/messages", response_model=MessageResponse)
-async def create_message(payload: MessageCreate):
+def create_message(payload: MessageCreate):
     new_id = len(MESSAGES) + 1
     msg = {
         "id": new_id,
@@ -96,39 +103,22 @@ async def create_message(payload: MessageCreate):
     }
     MESSAGES.append(msg)
 
-    # back.py의 텍스트 파이프라인 실행 (텍스트 → TTOT → DB 저장)
+    # 서버 B로 텍스트 포워딩
     reply_text = None
     try:
-        print(f"🚀 텍스트 파이프라인 실행 시작 (메시지 ID: {msg['id']})")
-        print(f"📝 입력 텍스트: {payload.text}")
-        print(f"👤 전달할 user_id: {payload.user_id}")
-        print(f"📦 전체 payload: {payload}")
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            # back.py의 /run-text-pipeline 호출
-            resp = await client.post(
-                "http://localhost:5001/run-text-pipeline",
-                data={
-                    "text": payload.text,
-                    "user_id": payload.user_id  # 실제 로그인한 사용자 ID 사용
-                }
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            
-            print(f"✅ 파이프라인 실행 완료: {result}")
-            
-            # TTOT 결과를 reply_text로 사용
-            if result.get("success") and result.get("step2_ttot"):
-                reply_text = result["step2_ttot"].get("ttot_text")
-            else:
-                reply_text = "파이프라인 실행 중 오류가 발생했습니다."
-                if result.get("errors"):
-                    reply_text += f"\n오류: {', '.join(result['errors'])}"
-                
+        forward_data = {
+            "message_id": msg["id"],
+            "room_id": msg["room_id"],
+            "text": msg["text"],
+            "client_type": msg["client_type"],
+        }
+        resp = requests.post(SERVER_B_URL, json=forward_data, timeout=2.0)
+        resp.raise_for_status()
+        processed = resp.json()
+        reply_text = processed.get("processed_text")
+        print("[ServerB 응답]", processed)
     except Exception as e:
-        print(f"❌ 파이프라인 실행 실패: {e}")
-        reply_text = f"오류: {str(e)}"
+        print("[ServerB 전송 실패]", e)
 
     return {
         **msg,
@@ -149,12 +139,12 @@ class LoginResponse(BaseModel):
 
 def load_users():
     if not USERDATA_PATH.exists():
-        return []
+        return {}
     with open(USERDATA_PATH, "r", encoding="utf-8") as f:
         try:
             return json.load(f)
         except:
-            return []
+            return {}
 
 
 def save_users(data):
@@ -167,23 +157,32 @@ def generate_uuid_from_id(user_id: str) -> int:
 
 @app.post("/api/login", response_model=LoginResponse)
 def login(payload: LoginRequest):
-    print(f"🔐 로그인 시도 - ID: {payload.username}, PWD: {payload.password}")
     users = load_users()
-    print(f"📋 저장된 사용자 수: {len(users)}")
-    print(f"📋 사용자 목록: {users}")
 
-    for u in users:
-        print(f"   비교 중: {u['id']} == {payload.username}, {u['pwd']} == {payload.password}")
-        if u["id"] == payload.username and u["pwd"] == payload.password:
-            print(f"✅ 로그인 성공!")
-            return LoginResponse(
-                success=True,
-                username=u["id"],
-                message="로그인 성공"
-            )
+    username = payload.username
+    password = payload.password
 
-    print(f"❌ 로그인 실패 - 일치하는 계정 없음")
-    return LoginResponse(success=False, message="아이디 또는 비밀번호가 올바르지 않습니다.")
+    # 유저가 아예 없을 때
+    if username not in users:
+        return LoginResponse(success=False, message="존재하지 않는 아이디입니다.")
+
+    user = users[username]
+
+    # 비밀번호 검증
+    if user["pwd"] != password:
+        return LoginResponse(success=False, message="비밀번호가 올바르지 않습니다.")
+
+    return LoginResponse(
+        success=True,
+        username=username,
+        message="로그인 성공"
+    )
+
+@app.get("/api/get_uuid")
+def get_uuid(username: str):
+    users = load_users()
+
+    return users[username]["uuid"]
 
 @app.post("/api/register", response_model=RegisterResponse)
 def register_user(payload: RegisterRequest):
@@ -195,51 +194,22 @@ def register_user(payload: RegisterRequest):
 
     users = load_users()
 
-    # ID 중복 체크
-    for u in users:
-        if u["id"] == user_id:
-            return RegisterResponse(success=False, message="이미 존재하는 ID입니다.")
+    # 이미 있는지 확인
+    if user_id in users:
+        return RegisterResponse(success=False, message="이미 존재하는 ID입니다.")
 
-    # uuid 생성
-    new_uuid = generate_uuid_from_id(user_id)
-
-    new_user = {
+    # 새 유저 저장
+    users[user_id] = {
         "id": user_id,
         "pwd": password,
-        "uuid": new_uuid
+        "uuid": abs(hash(user_id)) % (10**10),
+        "device": None
     }
 
-    users.append(new_user)
     save_users(users)
 
     return RegisterResponse(success=True, message="회원가입 완료!")
 
-# ==============================
-# 💬 대화 내역 조회 API (back.py 프록시)
-# ==============================
-@app.get("/api/conversation/{user_id}")
-async def get_conversation(user_id: str):
-    """
-    back.py의 대화 내역 조회 API를 프록시
-    back.py가 DB에서 데이터를 가져와서 반환
-    """
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"http://localhost:5001/api/conversation/{user_id}")
-        
-        if resp.status_code == 200:
-            return JSONResponse(resp.json(), status_code=200)
-        else:
-            return JSONResponse(
-                {"error": "Failed to load conversation", "user_id": user_id, "conversation": []},
-                status_code=500
-            )
-    except Exception as e:
-        print(f"❌ back.py 대화 내역 조회 통신 에러: {e}")
-        return JSONResponse(
-            {"error": str(e), "user_id": user_id, "conversation": []},
-            status_code=500
-        )
 
 # ==============================
 # 🎙️ 오디오 스트리밍 프록시
@@ -312,4 +282,4 @@ async def ingest_chunk(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("front_main:app", host="127.0.0.1", port=3000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
