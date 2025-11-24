@@ -28,6 +28,7 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // 로그인한 사용자 정보
   let currentUserId = null;
+  let currentUserUUID = null;
 
   // ===== 화면 전환 함수 =====
   function showLogin() {
@@ -121,11 +122,11 @@ document.addEventListener("DOMContentLoaded", () => {
         
         if (data.success) {
           console.log("✅ 로그인 성공!");
-          
           // 로그인한 사용자 정보 저장
           currentUserId = data.username;
           console.log("👤 로그인 사용자:", currentUserId);
-          
+          currentUserUUID = await (await fetch(`/api/get_uuid?username=${data.username}`)).json();
+
           if (loginErrorEl) loginErrorEl.classList.add("hidden");
 
           // 로그인 성공 → 홈 화면
@@ -577,4 +578,5 @@ document.addEventListener("DOMContentLoaded", () => {
       stopRecordingAudio("tab-hidden");
     }
   });
+
 });
