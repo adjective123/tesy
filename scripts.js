@@ -25,6 +25,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 로그인 성공 후 메시지 로딩에 쓸 함수(아래에서 할당)
   let loadMessages = null;
+  
+  // 로그인한 사용자 정보
+  let currentUserId = null;
 
   // ===== 화면 전환 함수 =====
   function showLogin() {
@@ -76,16 +79,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ===== 로그인 처리 =====
   if (loginForm && loginIdInput && loginPwInput) {
+    console.log("✅ 로그인 폼 이벤트 리스너 등록됨");
     loginForm.addEventListener("submit", async (e) => {
       e.preventDefault();
+      console.log("🔑 로그인 폼 제출됨");
 
       const username = loginIdInput.value.trim();
       const password = loginPwInput.value.trim();
+      console.log(`📝 입력값 - ID: "${username}", PWD: "${password}"`);
 
-      if (!username || !password) return;
+      if (!username || !password) {
+        console.log("❌ 빈 입력값");
+        return;
+      }
 
       try {
-        const res = await fetch(`${API_BASE_URL}/api/login`, {
+        const loginUrl = `${API_BASE_URL}/api/login`;
+        console.log(`🌐 로그인 요청 URL: ${loginUrl}`);
+        
+        const res = await fetch(loginUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -93,8 +105,10 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({ username, password }),
         });
 
+        console.log(`📡 응답 상태: ${res.status}`);
+
         if (!res.ok) {
-          console.error("로그인 요청 실패", res.status);
+          console.error("❌ 로그인 요청 실패", res.status);
           if (loginErrorEl) {
             loginErrorEl.textContent = "서버 오류가 발생했습니다.";
             loginErrorEl.classList.remove("hidden");
@@ -103,7 +117,15 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         const data = await res.json();
+        console.log("📦 응답 데이터:", data);
+        
         if (data.success) {
+          console.log("✅ 로그인 성공!");
+          
+          // 로그인한 사용자 정보 저장
+          currentUserId = data.username;
+          console.log("👤 로그인 사용자:", currentUserId);
+          
           if (loginErrorEl) loginErrorEl.classList.add("hidden");
 
           // 로그인 성공 → 홈 화면
@@ -114,18 +136,25 @@ document.addEventListener("DOMContentLoaded", () => {
             loadMessages();
           }
         } else {
+          console.log("❌ 로그인 실패:", data.message);
           if (loginErrorEl) {
             loginErrorEl.textContent = data.message || "아이디 또는 비밀번호가 올바르지 않습니다.";
             loginErrorEl.classList.remove("hidden");
           }
         }
       } catch (err) {
-        console.error("로그인 중 오류", err);
+        console.error("❌ 로그인 중 오류", err);
         if (loginErrorEl) {
           loginErrorEl.textContent = "네트워크 오류가 발생했습니다.";
           loginErrorEl.classList.remove("hidden");
         }
       }
+    });
+  } else {
+    console.error("❌ 로그인 폼 요소를 찾을 수 없음:", {
+      loginForm: !!loginForm,
+      loginIdInput: !!loginIdInput,
+      loginPwInput: !!loginPwInput
     });
   }
 
@@ -244,27 +273,45 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // ------------------------------
-  // 과거 메시지 불러오기 (로그인 후 사용)
+  // 과거 메시지 불러오기 (DB에서 로딩)
   // ------------------------------
   loadMessages = async function () {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/messages?room_id=default`);
-      if (!res.ok) {
-        console.error("메시지 목록 불러오기 실패", res.status);
+      if (!currentUserId) {
+        console.log("⚠️ 로그인되지 않음");
         return;
       }
-      const list = await res.json();
+
+      console.log(`📚 DB에서 대화 내역 불러오기: ${currentUserId}`);
+      
+      // DB에서 전체 대화 내역 가져오기
+      const res = await fetch(`${API_BASE_URL}/api/conversation/${currentUserId}`);
+      if (!res.ok) {
+        console.error("대화 내역 불러오기 실패", res.status);
+        return;
+      }
+      
+      const data = await res.json();
+      console.log(`✅ 대화 내역 로드 완료: ${data.conversation.length}개 항목`);
 
       chatMsgs.innerHTML = "";
-      for (const msg of list) {
-        // 지금은 전부 "me"로 표시 (원하면 client_type으로 구분)
-        addChatMessage(msg.text, "me");
+      
+      // 대화 내역을 순서대로 표시
+      for (const item of data.conversation) {
+        if (item.type === "input") {
+          // 사용자 입력 (나)
+          addChatMessage(item.text, "me");
+        } else if (item.type === "output") {
+          // AI 응답 (상대방)
+          addChatMessage(item.text, "other");
+        }
       }
-      if (list.length > 0) {
+      
+      if (data.conversation.length > 0) {
         showChatLog();
       }
     } catch (err) {
-      console.error("메시지 목록 로딩 중 오류", err);
+      console.error("대화 내역 로딩 중 오류", err);
     }
   };
 
@@ -289,16 +336,18 @@ document.addEventListener("DOMContentLoaded", () => {
     userInput.value = "";
 
     try {
-      // 2) 서버에 전송
+      // 2) 서버에 전송 (room_id를 사용자별로 분리)
+      const roomId = currentUserId || "test";
       const res = await fetch(`${API_BASE_URL}/api/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          room_id: "default",
+          room_id: roomId,  // 사용자별 room_id
           text: text,
           client_type: "web",
+          user_id: currentUserId || "test",  // 로그인한 사용자 ID 전달
         }),
       });
 
@@ -409,15 +458,17 @@ document.addEventListener("DOMContentLoaded", () => {
         stopRecordingAudio("finished");
 
         // 인식 결과를 텍스트와 동일하게 뒷단으로 보내주기
+        const roomId = currentUserId || "test";
         const res = await fetch(`${API_BASE_URL}/api/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          room_id: "default",
+          room_id: roomId,  // 사용자별 room_id
           text: result,
           client_type: "web",
+          user_id: currentUserId || "test",  // 로그인한 사용자 ID 전달
         }),
       });
       }
