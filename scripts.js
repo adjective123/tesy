@@ -23,12 +23,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const startChatBtn = document.getElementById("startChatBtn");
   const subiconBtn   = document.getElementById("subiconBtn");
 
+  // 유저 uuid 저장용
+  let currentUserUUID = null;
+  let currentUserId = null;
+
   // 로그인 성공 후 메시지 로딩에 쓸 함수(아래에서 할당)
   let loadMessages = null;
-  
-  // 로그인한 사용자 정보
-  let currentUserId = null;
-  let currentUserUUID = null;
 
   // ===== 화면 전환 함수 =====
   function showLogin() {
@@ -80,25 +80,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ===== 로그인 처리 =====
   if (loginForm && loginIdInput && loginPwInput) {
-    console.log("✅ 로그인 폼 이벤트 리스너 등록됨");
     loginForm.addEventListener("submit", async (e) => {
       e.preventDefault();
-      console.log("🔑 로그인 폼 제출됨");
 
       const username = loginIdInput.value.trim();
       const password = loginPwInput.value.trim();
-      console.log(`📝 입력값 - ID: "${username}", PWD: "${password}"`);
 
-      if (!username || !password) {
-        console.log("❌ 빈 입력값");
-        return;
-      }
+      if (!username || !password) return;
 
       try {
-        const loginUrl = `${API_BASE_URL}/api/login`;
-        console.log(`🌐 로그인 요청 URL: ${loginUrl}`);
-        
-        const res = await fetch(loginUrl, {
+        const res = await fetch(`${API_BASE_URL}/api/login`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -106,10 +97,8 @@ document.addEventListener("DOMContentLoaded", () => {
           body: JSON.stringify({ username, password }),
         });
 
-        console.log(`📡 응답 상태: ${res.status}`);
-
         if (!res.ok) {
-          console.error("❌ 로그인 요청 실패", res.status);
+          console.error("로그인 요청 실패", res.status);
           if (loginErrorEl) {
             loginErrorEl.textContent = "서버 오류가 발생했습니다.";
             loginErrorEl.classList.remove("hidden");
@@ -118,16 +107,14 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         const data = await res.json();
-        console.log("📦 응답 데이터:", data);
-        
-        if (data.success) {
-          console.log("✅ 로그인 성공!");
-          // 로그인한 사용자 정보 저장
-          currentUserId = data.username;
-          console.log("👤 로그인 사용자:", currentUserId);
-          currentUserUUID = await (await fetch(`/api/get_uuid?username=${data.username}`)).json();
 
+        // uuid 조회
+
+        if (data.success) {
           if (loginErrorEl) loginErrorEl.classList.add("hidden");
+          // uuid 저장
+          currentUserId = data.username;
+          currentUserUUID = await (await fetch(`/api/get_uuid?username=${data.username}`)).json();
 
           // 로그인 성공 → 홈 화면
           showHome();
@@ -137,25 +124,18 @@ document.addEventListener("DOMContentLoaded", () => {
             loadMessages();
           }
         } else {
-          console.log("❌ 로그인 실패:", data.message);
           if (loginErrorEl) {
             loginErrorEl.textContent = data.message || "아이디 또는 비밀번호가 올바르지 않습니다.";
             loginErrorEl.classList.remove("hidden");
           }
         }
       } catch (err) {
-        console.error("❌ 로그인 중 오류", err);
+        console.error("로그인 중 오류", err);
         if (loginErrorEl) {
           loginErrorEl.textContent = "네트워크 오류가 발생했습니다.";
           loginErrorEl.classList.remove("hidden");
         }
       }
-    });
-  } else {
-    console.error("❌ 로그인 폼 요소를 찾을 수 없음:", {
-      loginForm: !!loginForm,
-      loginIdInput: !!loginIdInput,
-      loginPwInput: !!loginPwInput
     });
   }
 
@@ -272,47 +252,86 @@ document.addEventListener("DOMContentLoaded", () => {
     chatMsgs.appendChild(row);
     chatLog.scrollTop = chatLog.scrollHeight;
   }
+  // ------------------------------
+  // 오디오 추가 함수
+  // ------------------------------
+  function addAudioMessage(src, who = "other") {
+    const row = document.createElement("div");
+    row.className = `chatRow ${who}`;
+
+    const bubble = document.createElement("div");
+    bubble.className = "chatBubble audioBubble";
+
+    // 오디오 엘리먼트 (controls 제거)
+    const audio = document.createElement("audio");
+    audio.src = src;
+
+    // 재생 상태 아이콘
+    const icon = document.createElement("span");
+    icon.className = "audioIcon";
+    icon.textContent = "■"; // 재생 중 표시
+
+    bubble.appendChild(icon);
+    bubble.appendChild(audio);
+    row.appendChild(bubble);
+    chatMsgs.appendChild(row);
+
+    chatLog.scrollTop = chatLog.scrollHeight;
+
+    // 자동 재생 시도
+    audio.play().catch((err) => {
+      console.warn("자동재생 실패:", err);
+      icon.textContent = "▶"; // 자동재생 안되면 ▶로
+    });
+
+    // 재생 시작 → ■
+    audio.addEventListener("play", () => {
+      icon.textContent = "■";
+    });
+
+    // 재생 종료 → ▶
+    audio.addEventListener("ended", () => {
+      icon.textContent = "▶";
+    });
+
+    // 클릭 시 재생/일시정지 토글
+    bubble.addEventListener("click", () => {
+      if (audio.paused) {
+        audio.play();
+      } else {
+        audio.pause();
+        icon.textContent = "▶"; // 일시정지 시 ▶
+      }
+    });
+  }
 
   // ------------------------------
-  // 과거 메시지 불러오기 (DB에서 로딩)
+  // 과거 메시지 불러오기 (로그인 후 사용)
   // ------------------------------
   loadMessages = async function () {
     try {
-      if (!currentUserId) {
-        console.log("⚠️ 로그인되지 않음");
-        return;
-      }
-
-      console.log(`📚 DB에서 대화 내역 불러오기: ${currentUserId}`);
-      
-      // DB에서 전체 대화 내역 가져오기
       const res = await fetch(`${API_BASE_URL}/api/conversation/${currentUserId}`);
       if (!res.ok) {
-        console.error("대화 내역 불러오기 실패", res.status);
+        console.error("대화 목록 불러오기 실패", res.status);
         return;
       }
-      
       const data = await res.json();
-      console.log(`✅ 대화 내역 로드 완료: ${data.conversation.length}개 항목`);
 
       chatMsgs.innerHTML = "";
-      
-      // 대화 내역을 순서대로 표시
       for (const item of data.conversation) {
+        // 사용자 입력 시
         if (item.type === "input") {
-          // 사용자 입력 (나)
-          addChatMessage(item.text, "me");
+          addChatMessage(item.text, "me")
+        // 응답
         } else if (item.type === "output") {
-          // AI 응답 (상대방)
-          addChatMessage(item.text, "other");
+          addChatMessage(item.text, "other")
         }
       }
-      
       if (data.conversation.length > 0) {
         showChatLog();
       }
     } catch (err) {
-      console.error("대화 내역 로딩 중 오류", err);
+      console.error("대화목록 로딩 중 오류", err);
     }
   };
 
@@ -327,8 +346,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  async function sendMessage() {
-    const text = userInput.value.trim();
+  async function sendMessage(result = null) {
+    const text = result ?? userInput.value.trim();
     if (!text) return;
 
     // 1) 먼저 내 메시지를 바로 UI에 표시
@@ -337,7 +356,7 @@ document.addEventListener("DOMContentLoaded", () => {
     userInput.value = "";
 
     try {
-      // 2) 서버에 전송 (room_id를 사용자별로 분리)
+      // 2) 서버에 전송
       const roomId = currentUserId || "test";
       const res = await fetch(`${API_BASE_URL}/api/messages`, {
         method: "POST",
@@ -345,10 +364,10 @@ document.addEventListener("DOMContentLoaded", () => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          room_id: roomId,  // 사용자별 room_id
+          room_id: roomId,
           text: text,
           client_type: "web",
-          user_id: currentUserId || "test",  // 로그인한 사용자 ID 전달
+          user_id: currentUserId || "test"
         }),
       });
 
@@ -359,10 +378,14 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const saved = await res.json();
+      console.log("saved:", saved);
+
+      reply_audio_path = `/wav_files/${currentUserUUID}/received_audio.wav`;
 
       // 3) 서버 B에서 처리한 답장만 나중에 표시
       if (saved.reply_text) {
         addChatMessage(saved.reply_text, "other");
+        addAudioMessage(reply_audio_path, "other");
       }
     } catch (err) {
       console.error("메시지 전송 중 오류", err);
@@ -452,26 +475,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // data.status: "Silent" | "Speech" | "Finished" | "Error"
       if (data.status === "Finished" && data.text) {
         // 최종 인식 결과를 나의 메시지로 표시
-        result = data.text
-
-        addChatMessage(result, "me");
-        showChatLog();
-        stopRecordingAudio("finished");
-
-        // 인식 결과를 텍스트와 동일하게 뒷단으로 보내주기
-        const roomId = currentUserId || "test";
-        const res = await fetch(`${API_BASE_URL}/api/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          room_id: roomId,  // 사용자별 room_id
-          text: result,
-          client_type: "web",
-          user_id: currentUserId || "test",  // 로그인한 사용자 ID 전달
-        }),
-      });
+        await sendMessage(data.text);
       }
     } catch (err) {
       console.error("청크 업로드 중 오류", err);
@@ -578,5 +582,4 @@ document.addEventListener("DOMContentLoaded", () => {
       stopRecordingAudio("tab-hidden");
     }
   });
-
 });
